@@ -1,8 +1,6 @@
 {
   "tasks": {
-    "dev": "deno run --allow-net --allow-read --allow-env --allow-run --watch server.ts & cd frontend && corepack pnpm run dev -- --port 8081 --no-open",
-    "dev:backend": "deno run --allow-net --allow-read --allow-env --watch server.ts",
-    "dev:frontend": "cd frontend && corepack pnpm run dev -- --port 8081 --no-open",
+    "dev": "deno run --allow-net --allow-read --allow-env --watch server.ts",
     "start": "deno run --allow-net --allow-read --allow-env server.ts",
     "check": "deno check server.ts",
     "cache": "deno cache server.ts"
