@@ -361,6 +361,35 @@ async function handleRequest(req: Request): Promise<Response> {
     return response;
   }
 
+  // In dev mode, proxy other WebSocket connections to Vite for HMR
+  if (config.isDevelopment) {
+    const upgrade = req.headers.get("upgrade");
+    if (upgrade?.toLowerCase() === "websocket") {
+      // Proxy WebSocket to Vite dev server
+      const viteUrl = `ws://localhost:${config.vitePort}${url.pathname}${url.search}`;
+
+      try {
+        const { socket, response } = Deno.upgradeWebSocket(req);
+        const viteWs = new WebSocket(viteUrl);
+
+        viteWs.onopen = () => {
+          socket.onmessage = (e) => viteWs.readyState === WebSocket.OPEN && viteWs.send(e.data);
+          socket.onclose = () => viteWs.close();
+          socket.onerror = () => viteWs.close();
+        };
+
+        viteWs.onmessage = (e) => socket.readyState === WebSocket.OPEN && socket.send(e.data);
+        viteWs.onclose = () => socket.readyState === WebSocket.OPEN && socket.close();
+        viteWs.onerror = () => socket.readyState === WebSocket.OPEN && socket.close();
+
+        return response;
+      } catch (err) {
+        console.error("WebSocket proxy error:", err);
+        return new Response("WebSocket proxy failed", { status: 500 });
+      }
+    }
+  }
+
   // API endpoint: /api/metadata
   if (req.method === "GET" && url.pathname === "/api/metadata") {
     return handleMetadata();

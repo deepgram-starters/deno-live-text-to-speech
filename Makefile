@@ -61,6 +61,8 @@ dev:
 		echo "Error: Frontend submodule not initialized. Run 'make init' first."; \
 		exit 1; \
 	fi
+	@trap 'kill 0' EXIT; \
+	cd frontend && corepack pnpm run dev -- --port 8081 --no-open & \
 	deno task dev
 
 # Start production server (requires build)
