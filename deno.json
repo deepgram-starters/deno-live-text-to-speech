@@ -1,6 +1,6 @@
 {
   "tasks": {
-    "dev": "deno run --allow-net --allow-read --allow-env --watch server.ts",
+    "start-backend": "deno run --allow-net --allow-read --allow-env --watch server.ts",
     "start": "deno run --allow-net --allow-read --allow-env server.ts",
     "check": "deno check server.ts",
     "cache": "deno cache server.ts"

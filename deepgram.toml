@@ -17,20 +17,25 @@ command = ["deno task cache", "cd frontend && corepack pnpm install"]
 message = "Dependencies installed"
 
 [install.config]
-sample = ".env.example"
+sample = "sample.env"
 output = ".env"
 
 [build]
 command = "cd frontend && corepack pnpm build"
 message = "Frontend built"
 
-[dev]
-command = "deno task dev"
-message = "Development servers started on http://localhost:8080"
+[check]
+command = ["command -v git", "command -v deno", "command -v pnpm"]
+message = "Prerequisites checked"
+
+[start.pre]
+command = ["test -f .env || echo 'Error: .env file not found'", "test -d frontend/.git || echo 'Error: Frontend submodule not initialized'"]
+message = "Pre-flight checks complete"
 
 [start]
-command = "deno task start"
-message = "Production server started on http://localhost:8080"
+command = ["deno run --allow-net --allow-read --allow-env --watch server.ts", "cd frontend && corepack pnpm run dev -- --port 8080 --no-open"]
+parallel = true
+message = "Application running on http://localhost:8080"
 
 [clean]
 command = ["rm -rf frontend/node_modules", "rm -rf frontend/dist"]

@@ -41,15 +41,13 @@ const DEEPGRAM_TTS_URL = "wss://api.deepgram.com/v1/speak";
 interface ServerConfig {
   port: number;
   host: string;
-  vitePort: number;
-  isDevelopment: boolean;
+  frontendPort: number;
 }
 
 const config: ServerConfig = {
-  port: parseInt(Deno.env.get("PORT") || "8080"),
+  port: parseInt(Deno.env.get("PORT") || "8081"),
   host: Deno.env.get("HOST") || "0.0.0.0",
-  vitePort: parseInt(Deno.env.get("VITE_PORT") || "8081"),
-  isDevelopment: Deno.env.get("NODE_ENV") === "development",
+  frontendPort: parseInt(Deno.env.get("FRONTEND_PORT") || "8080"),
 };
 
 // ============================================================================
@@ -77,6 +75,22 @@ function loadApiKey(): string {
 }
 
 const apiKey = loadApiKey();
+
+// ============================================================================
+// CORS CONFIGURATION
+// ============================================================================
+
+/**
+ * Get CORS headers for API responses
+ */
+function getCorsHeaders(): HeadersInit {
+  return {
+    "Access-Control-Allow-Origin": `http://localhost:${config.frontendPort}`,
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Credentials": "true",
+  };
+}
 
 // ============================================================================
 // TYPES - TypeScript interfaces for WebSocket communication
@@ -239,102 +253,35 @@ async function handleMetadata(): Promise<Response> {
           error: "INTERNAL_SERVER_ERROR",
           message: "Missing [meta] section in deepgram.toml",
         },
-        { status: 500 }
+        { status: 500, headers: getCorsHeaders() }
       );
     }
 
-    return Response.json(config.meta);
+    return Response.json(config.meta, { headers: getCorsHeaders() });
   } catch (error) {
     console.error("Error reading metadata:", error);
-    // Return default metadata if TOML parsing fails
-    return Response.json({
-      title: "Deno Live Text-to-Speech",
-      description: "Real-time text-to-speech using Deepgram",
-      framework: "Deno",
-      language: "TypeScript",
-      useCase: "live-text-to-speech"
-    });
+    return Response.json(
+      {
+        error: "INTERNAL_SERVER_ERROR",
+        message: "Failed to read metadata from deepgram.toml",
+      },
+      { status: 500, headers: getCorsHeaders() }
+    );
   }
 }
 
 // ============================================================================
-// FRONTEND SERVING - Development proxy or production static files
+// CORS PREFLIGHT HANDLER
 // ============================================================================
 
 /**
- * Get content type based on file extension
+ * Handle CORS preflight OPTIONS requests
  */
-function getContentType(filePath: string): string {
-  const ext = filePath.split(".").pop()?.toLowerCase();
-  const types: Record<string, string> = {
-    html: "text/html",
-    css: "text/css",
-    js: "application/javascript",
-    json: "application/json",
-    png: "image/png",
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    gif: "image/gif",
-    svg: "image/svg+xml",
-    ico: "image/x-icon",
-  };
-  return types[ext || ""] || "application/octet-stream";
-}
-
-/**
- * Serve static file from frontend/dist
- */
-async function serveStaticFile(pathname: string): Promise<Response> {
-  const filePath = pathname === "/"
-    ? "./frontend/dist/index.html"
-    : `./frontend/dist${pathname}`;
-
-  try {
-    const file = await Deno.readFile(filePath);
-    const contentType = getContentType(filePath);
-    return new Response(file, {
-      headers: { "content-type": contentType },
-    });
-  } catch {
-    // Return index.html for SPA routing (404s -> index.html)
-    try {
-      const index = await Deno.readFile("./frontend/dist/index.html");
-      return new Response(index, {
-        headers: { "content-type": "text/html" },
-      });
-    } catch {
-      return new Response("Not Found", { status: 404 });
-    }
-  }
-}
-
-/**
- * Handle frontend requests - proxy to Vite in dev, serve static in prod
- */
-async function handleFrontend(req: Request): Promise<Response> {
-  const url = new URL(req.url);
-
-  if (config.isDevelopment) {
-    // Proxy to Vite dev server
-    const viteUrl = `http://localhost:${config.vitePort}${url.pathname}${url.search}`;
-
-    try {
-      const response = await fetch(viteUrl, {
-        method: req.method,
-        headers: req.headers,
-        body: req.body,
-      });
-      return response;
-    } catch {
-      return new Response(
-        `Vite dev server not running on port ${config.vitePort}`,
-        { status: 502 }
-      );
-    }
-  }
-
-  // Production mode - serve static files
-  return serveStaticFile(url.pathname);
+function handlePreflight(): Response {
+  return new Response(null, {
+    status: 204,
+    headers: getCorsHeaders(),
+  });
 }
 
 // ============================================================================
@@ -344,12 +291,17 @@ async function handleFrontend(req: Request): Promise<Response> {
 async function handleRequest(req: Request): Promise<Response> {
   const url = new URL(req.url);
 
+  // Handle CORS preflight
+  if (req.method === "OPTIONS") {
+    return handlePreflight();
+  }
+
   // WebSocket endpoint: /tts/stream
   if (url.pathname === "/tts/stream") {
     const upgrade = req.headers.get("upgrade") || "";
 
     if (upgrade.toLowerCase() !== "websocket") {
-      return new Response("Expected WebSocket", { status: 426 });
+      return new Response("Expected WebSocket", { status: 426, headers: getCorsHeaders() });
     }
 
     // Upgrade to WebSocket
@@ -361,42 +313,16 @@ async function handleRequest(req: Request): Promise<Response> {
     return response;
   }
 
-  // In dev mode, proxy other WebSocket connections to Vite for HMR
-  if (config.isDevelopment) {
-    const upgrade = req.headers.get("upgrade");
-    if (upgrade?.toLowerCase() === "websocket") {
-      // Proxy WebSocket to Vite dev server
-      const viteUrl = `ws://localhost:${config.vitePort}${url.pathname}${url.search}`;
-
-      try {
-        const { socket, response } = Deno.upgradeWebSocket(req);
-        const viteWs = new WebSocket(viteUrl);
-
-        viteWs.onopen = () => {
-          socket.onmessage = (e) => viteWs.readyState === WebSocket.OPEN && viteWs.send(e.data);
-          socket.onclose = () => viteWs.close();
-          socket.onerror = () => viteWs.close();
-        };
-
-        viteWs.onmessage = (e) => socket.readyState === WebSocket.OPEN && socket.send(e.data);
-        viteWs.onclose = () => socket.readyState === WebSocket.OPEN && socket.close();
-        viteWs.onerror = () => socket.readyState === WebSocket.OPEN && socket.close();
-
-        return response;
-      } catch (err) {
-        console.error("WebSocket proxy error:", err);
-        return new Response("WebSocket proxy failed", { status: 500 });
-      }
-    }
-  }
-
   // API endpoint: /api/metadata
   if (req.method === "GET" && url.pathname === "/api/metadata") {
     return handleMetadata();
   }
 
-  // Frontend (catch-all)
-  return handleFrontend(req);
+  // 404 for all other routes
+  return Response.json(
+    { error: "Not Found", message: "Endpoint not found" },
+    { status: 404, headers: getCorsHeaders() }
+  );
 }
 
 // ============================================================================
@@ -404,13 +330,9 @@ async function handleRequest(req: Request): Promise<Response> {
 // ============================================================================
 
 console.log("\n" + "=".repeat(70));
-console.log(`🚀 Deno Live Text-to-Speech Server running at http://localhost:${config.port}`);
-if (config.isDevelopment) {
-  console.log(`📡 Proxying frontend from Vite dev server on port ${config.vitePort}`);
-  console.log(`\n⚠️  Open your browser to http://localhost:${config.port}`);
-} else {
-  console.log(`📦 Serving built frontend from frontend/dist`);
-}
+console.log(`🚀 Backend API Server running at http://localhost:${config.port}`);
+console.log(`📡 CORS enabled for http://localhost:${config.frontendPort}`);
+console.log(`\n💡 Frontend should be running on http://localhost:${config.frontendPort}`);
 console.log("=".repeat(70) + "\n");
 
 Deno.serve({ port: config.port, hostname: config.host }, handleRequest);

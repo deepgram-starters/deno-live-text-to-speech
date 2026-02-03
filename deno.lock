@@ -1,0 +1,23 @@
+{
+  "version": "5",
+  "specifiers": {
+    "jsr:@std/dotenv@0.225": "0.225.6",
+    "npm:@iarna/toml@2.2.5": "2.2.5"
+  },
+  "jsr": {
+    "@std/dotenv@0.225.6": {
+      "integrity": "1d6f9db72f565bd26790fa034c26e45ecb260b5245417be76c2279e5734c421b"
+    }
+  },
+  "npm": {
+    "@iarna/toml@2.2.5": {
+      "integrity": "sha512-trnsAYxU3xnS1gPHPyU961coFyLkh4gAD/0zQ5mymY4yOZ+CYvsPqUbOFSw0aDM4y0tV7tiFxL/1XfXPNC6IPg=="
+    }
+  },
+  "workspace": {
+    "dependencies": [
+      "jsr:@std/dotenv@0.225",
+      "npm:@iarna/toml@2.2.5"
+    ]
+  }
+}
