@@ -37,6 +37,10 @@ command = ["deno run --allow-net --allow-read --allow-env --watch server.ts", "c
 parallel = true
 message = "Application running on http://localhost:8080"
 
+[update]
+command = "git submodule update --remote --merge"
+message = "Submodules updated"
+
 [clean]
 command = ["rm -rf frontend/node_modules", "rm -rf frontend/dist"]
 message = "Build artifacts cleaned"
