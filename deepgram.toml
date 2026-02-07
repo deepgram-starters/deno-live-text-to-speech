@@ -4,9 +4,10 @@ description = "Get started using Deepgram's Live TTS with this Deno demo app"
 author = "Deepgram DX Team <devrel@deepgram.com> (https://developers.deepgram.com)"
 repository = "https://github.com/deepgram-starters/deno-live-text-to-speech"
 useCase = "live-text-to-speech"
-language = "TypeScript"
-framework = "Deno"
+language = "typescript"
+framework = "deno"
 sdk = "N/A"
+tags = ["live-text-to-speech", "live-tts", "streaming-tts", "real-time-tts", "streaming-text-to-speech", "typescript", "deno"]
 
 [install.pre]
 command = "git submodule update --init --recursive"
