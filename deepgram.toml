@@ -20,11 +20,6 @@ message = "Dependencies installed"
 [install.config]
 sample = "sample.env"
 output = ".env"
-
-[build]
-command = "cd frontend && corepack pnpm build"
-message = "Frontend built"
-
 [check]
 command = ["command -v git", "command -v deno", "command -v pnpm"]
 message = "Prerequisites checked"
@@ -45,3 +40,8 @@ message = "Submodules updated"
 [clean]
 command = ["rm -rf frontend/node_modules", "rm -rf frontend/dist"]
 message = "Build artifacts cleaned"
+
+# Eject frontend and contracts submodules for standalone development
+[eject-frontend]
+command = "make eject-frontend"
+message = "Frontend ejected successfully"
