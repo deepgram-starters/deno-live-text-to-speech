@@ -7,7 +7,8 @@
   },
   "imports": {
     "dotenv": "jsr:@std/dotenv@^0.225.0",
-    "@iarna/toml": "npm:@iarna/toml@2.2.5"
+    "@iarna/toml": "npm:@iarna/toml@2.2.5",
+    "jose": "npm:jose@5.9.6"
   },
   "compilerOptions": {
     "strict": true,

@@ -7,6 +7,7 @@
  * Key Features:
  * - WebSocket endpoint: /api/live-text-to-speech
  * - Bidirectional text/audio streaming
+ * - JWT session auth with page nonce (production only)
  * - RESTful API with /api/* prefix
  * - Native TypeScript support
  * - No external web framework needed
@@ -14,6 +15,7 @@
 
 import { load } from "dotenv";
 import TOML from "npm:@iarna/toml@2.2.5";
+import * as jose from "jose";
 
 // Load environment variables
 await load({ export: true });
@@ -46,6 +48,76 @@ const config: ServerConfig = {
   port: parseInt(Deno.env.get("PORT") || "8081"),
   host: Deno.env.get("HOST") || "0.0.0.0",
 };
+
+// ============================================================================
+// SESSION AUTH - JWT tokens with page nonce for production security
+// ============================================================================
+
+const SESSION_SECRET = Deno.env.get("SESSION_SECRET") || crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+const REQUIRE_NONCE = !!Deno.env.get("SESSION_SECRET");
+const SESSION_SECRET_KEY = new TextEncoder().encode(SESSION_SECRET);
+
+const sessionNonces = new Map<string, number>();
+const NONCE_TTL_MS = 5 * 60 * 1000;
+const JWT_EXPIRY = "1h";
+
+/**
+ * Generates a single-use nonce and stores it with an expiry
+ */
+function generateNonce(): string {
+  const array = new Uint8Array(16);
+  crypto.getRandomValues(array);
+  return Array.from(array, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Validates and consumes a nonce (single-use). Returns true if valid.
+ */
+function consumeNonce(nonce: string): boolean {
+  const expiry = sessionNonces.get(nonce);
+  if (!expiry) return false;
+  sessionNonces.delete(nonce);
+  return Date.now() < expiry;
+}
+
+// Clean up expired nonces every 60 seconds
+setInterval(() => {
+  const now = Date.now();
+  for (const [nonce, expiry] of sessionNonces) {
+    if (now >= expiry) sessionNonces.delete(nonce);
+  }
+}, 60_000);
+
+let indexHtmlTemplate: string | null = null;
+try {
+  indexHtmlTemplate = await Deno.readTextFile(
+    new URL("./frontend/dist/index.html", import.meta.url).pathname
+  );
+} catch {
+  // No built frontend (dev mode)
+}
+
+/**
+ * Creates a signed JWT session token
+ */
+async function createSessionToken(): Promise<string> {
+  return await new jose.SignJWT({ iat: Math.floor(Date.now() / 1000) })
+    .setProtectedHeader({ alg: "HS256" })
+    .setExpirationTime(JWT_EXPIRY)
+    .sign(SESSION_SECRET_KEY);
+}
+
+/**
+ * Verifies a JWT session token
+ */
+async function verifySessionToken(token: string): Promise<boolean> {
+  try {
+    await jose.jwtVerify(token, SESSION_SECRET_KEY);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // ============================================================================
 // API KEY LOADING - Load Deepgram API key from environment
@@ -84,7 +156,7 @@ function getCorsHeaders(): HeadersInit {
   return {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Session-Nonce",
   };
 }
 
@@ -231,6 +303,51 @@ async function handleLiveTts(
 }
 
 // ============================================================================
+// SESSION ROUTE HANDLERS
+// ============================================================================
+
+/**
+ * Serve index.html with injected session nonce (production only)
+ */
+function handleServeIndex(): Response {
+  if (!indexHtmlTemplate) {
+    return new Response("Frontend not built. Run make build first.", { status: 404 });
+  }
+  // Cleanup expired nonces
+  const now = Date.now();
+  for (const [nonce, expiry] of sessionNonces) {
+    if (now >= expiry) sessionNonces.delete(nonce);
+  }
+  const nonce = generateNonce();
+  sessionNonces.set(nonce, Date.now() + NONCE_TTL_MS);
+  const html = indexHtmlTemplate.replace(
+    "</head>",
+    `<meta name="session-nonce" content="${nonce}">\n</head>`
+  );
+  return new Response(html, {
+    headers: { "Content-Type": "text/html", ...getCorsHeaders() },
+  });
+}
+
+/**
+ * GET /api/session
+ * Issues a JWT. In production, requires valid nonce via X-Session-Nonce header.
+ */
+async function handleGetSession(req: Request): Promise<Response> {
+  if (REQUIRE_NONCE) {
+    const nonce = req.headers.get("X-Session-Nonce");
+    if (!nonce || !consumeNonce(nonce)) {
+      return Response.json(
+        { error: { type: "AuthenticationError", code: "INVALID_NONCE", message: "Valid session nonce required. Please refresh the page." } },
+        { status: 403, headers: getCorsHeaders() }
+      );
+    }
+  }
+  const token = await createSessionToken();
+  return Response.json({ token }, { headers: getCorsHeaders() });
+}
+
+// ============================================================================
 // API ROUTE HANDLERS
 // ============================================================================
 
@@ -292,7 +409,16 @@ async function handleRequest(req: Request): Promise<Response> {
     return handlePreflight();
   }
 
-  // WebSocket endpoint: /api/live-text-to-speech
+  // Session routes (unprotected)
+  if (url.pathname === "/" || url.pathname === "/index.html") {
+    return handleServeIndex();
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/session") {
+    return await handleGetSession(req);
+  }
+
+  // WebSocket endpoint: /api/live-text-to-speech (auth via subprotocol)
   if (url.pathname === "/api/live-text-to-speech") {
     const upgrade = req.headers.get("upgrade") || "";
 
@@ -300,8 +426,24 @@ async function handleRequest(req: Request): Promise<Response> {
       return new Response("Expected WebSocket", { status: 426, headers: getCorsHeaders() });
     }
 
-    // Upgrade to WebSocket
-    const { socket, response } = Deno.upgradeWebSocket(req);
+    // Validate JWT from subprotocol
+    const protocols = req.headers.get("sec-websocket-protocol") || "";
+    const protocolList = protocols.split(",").map((p) => p.trim());
+    const tokenProto = protocolList.find((p) => p.startsWith("access_token."));
+
+    if (!tokenProto) {
+      return new Response("Unauthorized", { status: 401, headers: getCorsHeaders() });
+    }
+
+    const jwtToken = tokenProto.slice("access_token.".length);
+    if (!(await verifySessionToken(jwtToken))) {
+      return new Response("Unauthorized", { status: 401, headers: getCorsHeaders() });
+    }
+
+    // Upgrade with accepted subprotocol
+    const { socket, response } = Deno.upgradeWebSocket(req, {
+      protocol: tokenProto,
+    });
 
     // Handle the WebSocket connection
     handleLiveTts(socket, url.searchParams);
@@ -309,7 +451,7 @@ async function handleRequest(req: Request): Promise<Response> {
     return response;
   }
 
-  // API endpoint: /api/metadata
+  // Metadata (unprotected)
   if (req.method === "GET" && url.pathname === "/api/metadata") {
     return handleMetadata();
   }
@@ -325,9 +467,13 @@ async function handleRequest(req: Request): Promise<Response> {
 // SERVER START
 // ============================================================================
 
+const nonceStatus = REQUIRE_NONCE ? " (nonce required)" : "";
 console.log("\n" + "=".repeat(70));
 console.log(`🚀 Backend API Server running at http://localhost:${config.port}`);
-console.log(`📡 CORS enabled for all origins`);
+console.log("");
+console.log(`📡 GET  /api/session${nonceStatus}`);
+console.log(`📡 WS   /api/live-text-to-speech (auth required)`);
+console.log(`📡 GET  /api/metadata`);
 console.log("=".repeat(70) + "\n");
 
 Deno.serve({ port: config.port, hostname: config.host }, handleRequest);
