@@ -2,7 +2,8 @@
   "version": "5",
   "specifiers": {
     "jsr:@std/dotenv@0.225": "0.225.6",
-    "npm:@iarna/toml@2.2.5": "2.2.5"
+    "npm:@iarna/toml@2.2.5": "2.2.5",
+    "npm:jose@5.9.6": "5.9.6"
   },
   "jsr": {
     "@std/dotenv@0.225.6": {
@@ -12,12 +13,16 @@
   "npm": {
     "@iarna/toml@2.2.5": {
       "integrity": "sha512-trnsAYxU3xnS1gPHPyU961coFyLkh4gAD/0zQ5mymY4yOZ+CYvsPqUbOFSw0aDM4y0tV7tiFxL/1XfXPNC6IPg=="
+    },
+    "jose@5.9.6": {
+      "integrity": "sha512-AMlnetc9+CV9asI19zHmrgS/WYsWUwCn2R7RzlbJWD7F9eWYUTGyBmU9o6PxngtLGOiDGPRu+Uc4fhKzbpteZQ=="
     }
   },
   "workspace": {
     "dependencies": [
       "jsr:@std/dotenv@0.225",
-      "npm:@iarna/toml@2.2.5"
+      "npm:@iarna/toml@2.2.5",
+      "npm:jose@5.9.6"
     ]
   }
 }
