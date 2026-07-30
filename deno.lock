@@ -2,6 +2,7 @@
   "version": "5",
   "specifiers": {
     "jsr:@std/dotenv@0.225": "0.225.6",
+    "npm:@deepgram/sdk@^5.7.0": "5.7.0",
     "npm:@iarna/toml@2.2.5": "2.2.5",
     "npm:jose@5.9.6": "5.9.6"
   },
@@ -11,16 +12,26 @@
     }
   },
   "npm": {
+    "@deepgram/sdk@5.7.0": {
+      "integrity": "sha512-A0uIaLukO+8JXUuT+iDE5ts8PCmdLCxDajawghFHLDEnFvA8dYYecCFxqFaTWgjJcJil0CtgIHKzm23E4RVqOA==",
+      "dependencies": [
+        "ws"
+      ]
+    },
     "@iarna/toml@2.2.5": {
       "integrity": "sha512-trnsAYxU3xnS1gPHPyU961coFyLkh4gAD/0zQ5mymY4yOZ+CYvsPqUbOFSw0aDM4y0tV7tiFxL/1XfXPNC6IPg=="
     },
     "jose@5.9.6": {
       "integrity": "sha512-AMlnetc9+CV9asI19zHmrgS/WYsWUwCn2R7RzlbJWD7F9eWYUTGyBmU9o6PxngtLGOiDGPRu+Uc4fhKzbpteZQ=="
+    },
+    "ws@8.21.1": {
+      "integrity": "sha512-+0NTnW77fFN/DjQi6k/Sq/Yvk4Sgajw7urW8V+asjXnRgDs9gyGkdb7EzgfhA4goXsRIZKE28fzIXBHEzhuiWw=="
     }
   },
   "workspace": {
     "dependencies": [
       "jsr:@std/dotenv@0.225",
+      "npm:@deepgram/sdk@^5.7.0",
       "npm:@iarna/toml@2.2.5",
       "npm:jose@5.9.6"
     ]
