@@ -16,6 +16,7 @@
 import { load } from "dotenv";
 import TOML from "npm:@iarna/toml@2.2.5";
 import * as jose from "jose";
+import { DeepgramClient } from "@deepgram/sdk";
 
 // Load environment variables
 await load({ export: true });
@@ -30,11 +31,6 @@ await load({ export: true });
  * See: https://developers.deepgram.com/docs/text-to-speech-models
  */
 const DEFAULT_MODEL = "aura-2-thalia-en";
-
-/**
- * Deepgram Live TTS WebSocket URL
- */
-const DEEPGRAM_TTS_URL = "wss://api.deepgram.com/v1/speak";
 
 /**
  * Server configuration - These can be overridden via environment variables
@@ -116,6 +112,37 @@ function loadApiKey(): string {
 const apiKey = loadApiKey();
 
 // ============================================================================
+// DEEPGRAM SDK CLIENT
+// ============================================================================
+
+// A single SDK client is reused across connections; auth is resolved from the
+// API key here, so the browser never sees it.
+//
+// DEEPGRAM_BASE_URL (e.g. a staging host like wss://api.staging.deepgram.com)
+// overrides the default production endpoint. The speak websocket uses
+// `environment.production`, so we set that plus the REST `base`.
+const baseUrl = Deno.env.get("DEEPGRAM_BASE_URL");
+const httpBase = baseUrl
+  ?.replace(/^wss:\/\//, "https://")
+  .replace(/^ws:\/\//, "http://");
+const deepgram = new DeepgramClient({
+  apiKey,
+  ...(baseUrl && httpBase
+    ? {
+        environment: {
+          base: httpBase,
+          production: baseUrl,
+          agent: baseUrl,
+          agentRest: httpBase,
+        },
+      }
+    : {}),
+});
+if (baseUrl) {
+  console.log(`Using custom Deepgram base URL: ${baseUrl}`);
+}
+
+// ============================================================================
 // CORS CONFIGURATION
 // ============================================================================
 
@@ -145,15 +172,17 @@ interface ErrorMessage {
 // ============================================================================
 
 /**
- * Build Deepgram WebSocket URL with query parameters
+ * Build Deepgram live-TTS options from the client's query params.
+ * These are passed to `deepgram.speak.v1.createConnection({ ... })`; the SDK
+ * serializes them onto the websocket query string.
  */
-function buildDeepgramUrl(queryParams: URLSearchParams): string {
-  const model = queryParams.get("model") || DEFAULT_MODEL;
-  const encoding = queryParams.get("encoding") || "linear16";
-  const sampleRate = queryParams.get("sample_rate") || "48000";
-  const container = queryParams.get("container") || "none";
-
-  return `${DEEPGRAM_TTS_URL}?model=${model}&encoding=${encoding}&sample_rate=${sampleRate}&container=${container}`;
+function buildSpeakOptions(queryParams: URLSearchParams) {
+  return {
+    model: queryParams.get("model") || DEFAULT_MODEL,
+    encoding: queryParams.get("encoding") || "linear16",
+    sample_rate: queryParams.get("sample_rate") || "48000",
+    container: queryParams.get("container") || "none",
+  };
 }
 
 /**
@@ -178,96 +207,155 @@ function sendError(socket: WebSocket, error: Error, code: string = "UNKNOWN_ERRO
  * Handle live TTS WebSocket connection
  * Establishes bidirectional proxy between client and Deepgram
  */
+type SpeakConnection = Awaited<
+  ReturnType<typeof deepgram.speak.v1.createConnection>
+>;
+
 async function handleLiveTts(
   clientSocket: WebSocket,
   queryParams: URLSearchParams
 ) {
   console.log("Client connected to /api/live-text-to-speech");
 
-  let deepgramWs: WebSocket | null = null;
+  const options = buildSpeakOptions(queryParams);
+  console.log("Connecting to Deepgram TTS:", options);
 
+  // Buffer any browser control messages that arrive before the socket is open.
+  let dgReady = false;
+  const pending: Record<string, unknown>[] = [];
+
+  // Create the Deepgram TTS connection object (not yet connected). The SDK
+  // manages the websocket, auth, reconnection and (de)serialization; its
+  // WrappedSpeakV1Socket delivers binary audio frames as-is.
+  let dgConn: SpeakConnection;
   try {
-    // Build Deepgram WebSocket URL with parameters
-    const deepgramUrl = buildDeepgramUrl(queryParams);
-    console.log("Connecting to Deepgram TTS:", deepgramUrl);
-
-    // Connect to Deepgram with authorization
-    deepgramWs = new WebSocket(deepgramUrl, {
-      headers: {
-        Authorization: `Token ${apiKey}`,
-      },
-    });
-
-    // Wait for Deepgram connection to open
-    await new Promise((resolve, reject) => {
-      if (!deepgramWs) return reject(new Error("deepgramWs is null"));
-
-      deepgramWs.onopen = () => {
-        console.log("✓ Connected to Deepgram TTS");
-        resolve(null);
-      };
-
-      deepgramWs.onerror = (err) => {
-        console.error("Deepgram connection error:", err);
-        reject(new Error("Failed to connect to Deepgram"));
-      };
-    });
-
-    // Forward messages from client to Deepgram (text data)
-    clientSocket.onmessage = (event) => {
-      if (deepgramWs && deepgramWs.readyState === WebSocket.OPEN) {
-        deepgramWs.send(event.data);
-      }
-    };
-
-    // Forward messages from Deepgram to client (audio data)
-    deepgramWs.onmessage = (event) => {
-      if (clientSocket.readyState === WebSocket.OPEN) {
-        clientSocket.send(event.data);
-      }
-    };
-
-    // Handle client disconnect
-    clientSocket.onclose = () => {
-      console.log("Client disconnected");
-      if (deepgramWs) {
-        deepgramWs.close();
-      }
-    };
-
-    // Handle client errors
-    clientSocket.onerror = (err) => {
-      console.error("Client WebSocket error:", err);
-      if (deepgramWs) {
-        deepgramWs.close();
-      }
-    };
-
-    // Handle Deepgram disconnect
-    deepgramWs.onclose = (event) => {
-      console.log(`Deepgram connection closed: ${event.code} ${event.reason}`);
-      if (clientSocket.readyState === WebSocket.OPEN) {
-        clientSocket.close();
-      }
-    };
-
-    // Handle Deepgram errors
-    deepgramWs.onerror = (err) => {
-      console.error("Deepgram WebSocket error:", err);
-      sendError(clientSocket, new Error("Deepgram connection error"), "DEEPGRAM_ERROR");
-      if (clientSocket.readyState === WebSocket.OPEN) {
-        clientSocket.close();
-      }
-    };
-
+    dgConn = await deepgram.speak.v1.createConnection(options);
   } catch (err) {
-    console.error("Error setting up live TTS:", err);
+    console.error("Failed to create Deepgram connection:", err);
+    sendError(clientSocket, err as Error, "CONNECTION_FAILED");
+    if (clientSocket.readyState === WebSocket.OPEN) {
+      clientSocket.close(3000, "Failed to reach Deepgram");
+    }
+    return;
+  }
+
+  // Route a control message (Speak / Flush / Clear / Close) from the browser to
+  // the matching SDK method. Speak text uses sendText on speak v1.
+  const dispatchControl = (msg: Record<string, unknown>) => {
+    try {
+      switch (msg.type) {
+        case "Speak":
+          dgConn.sendText({ type: "Speak", text: String(msg.text ?? "") });
+          break;
+        case "Flush":
+          dgConn.sendFlush({ type: "Flush" });
+          break;
+        case "Clear":
+          dgConn.sendClear({ type: "Clear" });
+          break;
+        case "Close":
+          dgConn.sendClose({ type: "Close" });
+          break;
+        default:
+          console.warn("Ignoring unknown client control message type:", msg.type);
+      }
+    } catch (err) {
+      console.error("Failed to forward control message to Deepgram:", err);
+    }
+  };
+
+  // Deepgram -> browser. Binary audio frames are forwarded as-is; JSON control
+  // messages (Metadata / Flushed / Cleared / Warning) are re-serialized so the
+  // frontend sees the same JSON it received from the raw socket before.
+  dgConn.on("message", (data: unknown) => {
+    if (clientSocket.readyState !== WebSocket.OPEN) return;
+    if (
+      data instanceof ArrayBuffer ||
+      data instanceof Blob ||
+      ArrayBuffer.isView(data)
+    ) {
+      clientSocket.send(data as ArrayBuffer | Blob | ArrayBufferView);
+    } else if (typeof data === "string") {
+      clientSocket.send(data);
+    } else {
+      clientSocket.send(JSON.stringify(data));
+    }
+  });
+
+  dgConn.on("open", () => {
+    console.log("✓ Connected to Deepgram TTS");
+  });
+
+  dgConn.on("error", (err) => {
+    console.error("Deepgram socket error:", err);
+    sendError(clientSocket, new Error("Deepgram connection error"), "DEEPGRAM_ERROR");
+    if (clientSocket.readyState === WebSocket.OPEN) {
+      clientSocket.close();
+    }
+  });
+
+  dgConn.on("close", () => {
+    console.log("Deepgram connection closed");
+    if (clientSocket.readyState === WebSocket.OPEN) {
+      clientSocket.close();
+    }
+  });
+
+  // browser -> Deepgram. TTS input is JSON control (Speak / Flush / Clear / Close).
+  clientSocket.onmessage = (event) => {
+    const data = event.data;
+    if (typeof data !== "string") {
+      console.warn("Ignoring unexpected binary frame from client");
+      return;
+    }
+    let msg: Record<string, unknown>;
+    try {
+      msg = JSON.parse(data);
+    } catch {
+      console.warn("Ignoring non-JSON text message from client");
+      return;
+    }
+    if (!dgReady) {
+      pending.push(msg);
+      return;
+    }
+    dispatchControl(msg);
+  };
+
+  // Handle client disconnect
+  clientSocket.onclose = () => {
+    console.log("Client disconnected");
+    try {
+      dgConn.close();
+    } catch {
+      // already closed
+    }
+  };
+
+  // Handle client errors
+  clientSocket.onerror = (err) => {
+    console.error("Client WebSocket error:", err);
+    try {
+      dgConn.close();
+    } catch {
+      // already closed
+    }
+  };
+
+  // Open the Deepgram connection and flush anything the browser sent early.
+  try {
+    dgConn.connect();
+    await dgConn.waitForOpen();
+    dgReady = true;
+    for (const msg of pending) {
+      dispatchControl(msg);
+    }
+    pending.length = 0;
+  } catch (err) {
+    console.error("Deepgram connection did not open:", err);
     sendError(clientSocket, err as Error, "CONNECTION_FAILED");
     if (clientSocket.readyState === WebSocket.OPEN) {
       clientSocket.close(3000, "Setup failed");
-    }
-    if (deepgramWs) {
-      deepgramWs.close();
     }
   }
 }

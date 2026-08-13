@@ -6,6 +6,7 @@
     "cache": "deno cache server.ts"
   },
   "imports": {
+    "@deepgram/sdk": "npm:@deepgram/sdk@^5.7.0",
     "dotenv": "jsr:@std/dotenv@^0.225.0",
     "@iarna/toml": "npm:@iarna/toml@2.2.5",
     "jose": "npm:jose@5.9.6"
